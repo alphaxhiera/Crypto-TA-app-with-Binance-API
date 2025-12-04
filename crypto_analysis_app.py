@@ -3,29 +3,31 @@ import pandas as pd
 import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime
 
 # =====================================
-# CoinGecko Data (Free & No API Key Needed)
+# CoinGecko API with YOUR Key (Free tier = 10,000 calls/month)
 # =====================================
-@st.cache_data(ttl=60)  # Refresh every 60 seconds
-def get_coingecko_data(coin_id, days):
+API_KEY = st.secrets["coingecko_api_key"]  # We'll set this in secrets (see Step 3)
+
+headers = {"x-cg-demo-api-key": API_KEY}  # Free tier header
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_data(coin_id, days):
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc?vs_currency=usd&days={days}"
     try:
-        data = requests.get(url, timeout=10).json()
-        if not data:
-            st.error("No data returned. Check coin ID.")
-            return None
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
         df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
         return df.sort_values('timestamp').reset_index(drop=True)
     except Exception as e:
-        st.error(f"CoinGecko Error: {e}")
+        st.error(f"API Error: {e}")
         return None
 
 # =====================================
-# Indicators
+# Indicators + ATR
 # =====================================
 def add_indicators(df):
     df['sma10'] = df['close'].rolling(10).mean()
@@ -35,8 +37,7 @@ def add_indicators(df):
     delta = df['close'].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+    df['rsi'] = 100 - (100 / (1 + rs)) if (rs := gain / loss).replace([float('inf')], 0).isna().all() else 100 - (100 / (1 + rs))
 
     # MACD
     df['ema12'] = df['close'].ewm(span=12, adjust=False).mean()
@@ -51,137 +52,96 @@ def add_indicators(df):
     df['bb_upper'] = df['bb_mid'] + (df['bb_std'] * 2)
     df['bb_lower'] = df['bb_mid'] - (df['bb_std'] * 2)
 
-    # Simple ATR approximation
-    df['tr'] = pd.concat([df['high'] - df['low'], 
-                          (df['high'] - df['close'].shift()).abs(), 
-                          (df['low'] - df['close'].shift()).abs()], axis=1).max(axis=1)
+    # ATR for TP/SL
+    df['tr'] = pd.concat([
+        df['high'] - df['low'],
+        (df['high'] - df['close'].shift()).abs(),
+        (df['low'] - df['close'].shift()).abs()
+    ], axis=1).max(axis=1)
     df['atr'] = df['tr'].rolling(14).mean()
 
     return df
 
 # =====================================
-# Smart Analysis & Recommendation
+# Analysis Engine
 # =====================================
 def generate_analysis(df):
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    price = latest['close']
-    atr = latest['atr'] if not pd.isna(latest['atr']) else (price * 0.02)
+    l = df.iloc[-1]
+    p = df.iloc[-2]
+    price = l['close']
+    atr = l['atr'] if not pd.isna(l['atr']) else price * 0.02
 
-    # Trend
-    trend = "Bullish" if latest['sma10'] > latest['sma30'] else "Bearish"
+    trend = "Bullish" if l['sma10'] > l['sma30'] else "Bearish"
+    rsi_val = l['rsi']
+    rsi_zone = "Overbought" if rsi_val > 70 else "Oversold" if rsi_val < 30 else "Neutral"
 
-    # RSI Zone
-    rsi_val = latest['rsi']
-    if rsi_val > 70:
-        rsi_zone = "Overbought"
-    elif rsi_val < 30:
-        rsi_zone = "Oversold"
-    else:
-        rsi_zone = "Neutral"
-
-    # MACD Signal
-    macd_sig = "Bullish" if latest['macd_hist'] > 0 and prev['macd_hist'] <= 0 else \
-               "Bearish" if latest['macd_hist'] < 0 and prev['macd_hist'] >= 0 else "Neutral"
-
-    # Score (0–5)
     score = 0
     if trend == "Bullish": score += 2
-    if latest['macd_hist'] > 0: score += 1
-    if price > latest['sma10']: score += 1
+    if l['macd_hist'] > 0: score += 1
+    if price > l['sma10']: score += 1
     if rsi_val < 65: score += 1
 
-    # Recommendation
-    if score >= 4:
-        rec = "STRONG BUY"
-        action = "Enter Long Now"
-    elif score == 3:
-        rec = "BUY"
-        action = "Consider Long"
-    elif score <= 1:
-        rec = "STRONG SELL"
-        action = "Short or Stay Away"
-    else:
-        rec = "HOLD / WAIT"
-        action = "Wait for confirmation"
-
-    # Targets
-    tp1 = round(price + atr * 1.5, 6)
-    tp2 = round(price + atr * 3, 6)
-    sl = round(price - atr * 1.5, 6)
-
-    resistance = df['high'].tail(30).max()
-    support = df['low'].tail(30).min()
+    if score >= 4:   rec, action = "STRONG BUY", "Enter Long Now"
+    elif score == 3: rec, action = "BUY", "Consider Long"
+    elif score <= 1: rec, action = "STRONG SELL", "Short or Exit"
+    else:            rec, action = "HOLD", "Wait"
 
     return {
         "price": price,
         "trend": trend,
         "rsi": round(rsi_val, 2),
         "rsi_zone": rsi_zone,
-        "macd_sig": macd_sig,
         "score": score,
         "recommendation": rec,
         "action": action,
-        "tp1": tp1,
-        "tp2": tp2,
-        "sl": sl,
-        "resistance": resistance,
-        "support": support
+        "tp1": round(price + atr * 1.5, 6),
+        "tp2": round(price + atr * 3, 6),
+        "sl": round(price - atr * 1.5, 6),
+        "resistance": df['high'].tail(30).max(),
+        "support": df['low'].tail(30).min()
     }
 
 # =====================================
 # Streamlit App
 # =====================================
-st.set_page_config(page_title="Crypto TA Pro • CoinGecko", layout="wide")
+st.set_page_config(page_title="Crypto TA Pro", layout="wide")
 st.title("Crypto Technical Analysis Pro")
-st.markdown("**Live data from CoinGecko • Free & No API Key**")
+st.markdown("**Powered by CoinGecko API (Official Free Tier)**")
 
-# Popular coins (CoinGecko IDs)
 coins = {
-    "Bitcoin": "bitcoin",
-    "Ethereum": "ethereum",
-    "BNB": "binancecoin",
-    "Solana": "solana",
-    "Cardano": "cardano",
-    "XRP": "ripple",
-    "Dogecoin": "dogecoin",
-    "Polkadot": "polkadot",
-    "Avalanche": "avalanche-2",
-    "Shiba Inu": "shiba-inu"
+    "Bitcoin": "bitcoin", "Ethereum": "ethereum", "BNB": "binancecoin",
+    "Solana": "solana", "XRP": "ripple", "Cardano": "cardano",
+    "Dogecoin": "dogecoin", "Avalanche": "avalanche-2", "Shiba Inu": "shiba-inu"
 }
 
 col1, col2 = st.columns([1, 3])
 with col1:
-    coin_name = st.selectbox("Select Coin", options=list(coins.keys()), index=0)
-    coin_id = coins[coin_name]
-    days = st.selectbox("Time Range", [7, 14, 30, 90, 180, 365], index=2)
+    coin = st.selectbox("Coin", list(coins.keys()))
+    days = st.selectbox("Period", [7, 14, 30, 90, 180, 365], index=2)
 
 if st.button("Analyze Now", type="primary"):
-    with st.spinner(f"Fetching {coin_name} data from CoinGecko..."):
-        df = get_coingecko_data(coin_id, days)
-    
+    with st.spinner("Fetching data from CoinGecko..."):
+        df = get_data(coins[coin], days)
+
     if df is None or len(df) < 50:
-        st.error("Not enough data. Try a longer time range.")
+        st.error("Not enough data. Try longer period.")
         st.stop()
 
     df = add_indicators(df)
     analysis = generate_analysis(df)
     latest = df.iloc[-1]
 
-    # === Chart ===
-    fig = make_subplots(
-        rows=4, cols=1, shared_xaxes=True,
-        vertical_spacing=0.03,
-        subplot_titles=("Price & Indicators", "RSI (14)", "MACD", "Volume (Approx)"),
-        row_heights=[0.5, 0.15, 0.15, 0.2]
-    )
+    # Chart
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                        subplot_titles=("Price + Indicators", "RSI", "MACD", "Volume Proxy"),
+                        row_heights=[0.5, 0.15, 0.15, 0.2])
 
     fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'],
                                  low=df['low'], close=df['close'], name="Price"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['sma10'], name="SMA 10", line=dict(color="lime")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['sma30'], name="SMA 30", line=dict(color="orange")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['bb_upper'], name="BB Upper", line=dict(dash="dot", color="gray")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['bb_lower'], name="BB Lower", line=dict(dash="dot", color="gray")), row=1, col=1)
+    for line, name, color in [(df['sma10'], "SMA 10", "lime"), (df['sma30'], "SMA 30", "orange"),
+                              (df['bb_upper'], "BB Upper", "gray"), (df['bb_lower'], "BB Lower", "gray")]:
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=line, name=name,
+                                 line=dict(color=color, dash="dot" if "BB" in name else "solid")), row=1, col=1)
 
     fig.add_trace(go.Scatter(x=df['timestamp'], y=df['rsi'], name="RSI", line=dict(color="purple")), row=2, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
@@ -192,37 +152,28 @@ if st.button("Analyze Now", type="primary"):
     fig.add_trace(go.Scatter(x=df['timestamp'], y=df['macd'], name="MACD", line=dict(color="blue")), row=3, col=1)
     fig.add_trace(go.Scatter(x=df['timestamp'], y=df['signal'], name="Signal", line=dict(color="orange")), row=3, col=1)
 
-    # Volume not available → fake from price movement
-    volume_proxy = (df['high'] - df['low']).abs()
-    fig.add_trace(go.Bar(x=df['timestamp'], y=volume_proxy, name="Vol Proxy", marker_color="lightblue"), row=4, col=1)
+    fig.add_trace(go.Bar(x=df['timestamp'], y=(df['high']-df['low']), name="Vol Proxy", marker_color="lightblue"), row=4, col=1)
 
-    fig.update_layout(height=900, showlegend=True,
-                      title=f"{coin_name} ({coin_id.upper()}) • Last {days} Days")
+    fig.update_layout(height=900, title=f"{coin} • Last {days} days • Updated {latest['timestamp'].strftime('%Y-%m-%d %H:%M')} UTC")
     st.plotly_chart(fig, use_container_width=True)
 
-    # === Summary ===
-    st.markdown("## Trade Recommendation")
+    # Summary
+    st.success(f"**SIGNAL: {analysis['recommendation']}** → {analysis['action']}")
     c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Price", f"${analysis['price']:,.2f}")
-    with c2:
-        st.metric("RSI", analysis['rsi'], delta=analysis['rsi_zone'])
-    with c3:
-        st.metric("Trend Score", f"{analysis['score']}/5", delta=analysis['recommendation'])
+    c1.metric("Price", f"${analysis['price']:,.2f}")
+    c2.metric("RSI", analysis['rsi'], delta=analysis['rsi_zone'])
+    c3.metric("Score", f"{analysis['score']}/5")
 
-    st.success(f"**Signal: {analysis['recommendation']}**")
-    st.info(f"**Action → {analysis['action']}**")
-
-    st.markdown(f"""
-    **Key Levels**  
-    • Resistance: `{analysis['resistance']:.6f}`  
-    • Support: `{analysis['support']:.6f}`  
-    • Take Profit 1: `{analysis['tp1']}`  
-    • Take Profit 2: `{analysis['tp2']}`  
-    • Stop Loss: `{analysis['sl']}`  
+    st.info(f"""
+    **Trade Setup**  
+    • Resistance → {analysis['resistance']:.6f}  
+    • Support → {analysis['support']:.6f}  
+    • Take Profit 1 → {analysis['tp1']}  
+    • Take Profit 2 → {analysis['tp2']}  
+    • Stop Loss → {analysis['sl']}  
     """)
 
-    if analysis['recommendation'] in ["STRONG BUY", "BUY"]:
+    if "BUY" in analysis['recommendation']:
         st.balloons()
 
-st.caption("Data: CoinGecko API • Educational tool • Not financial advice • DYOR")
+st.caption("CoinGecko API • Free tier • Not financial advice")
