@@ -1,4 +1,4 @@
-# app.py — Crypto TA Pro v2025 + Stochastic + Penjelasan Lengkap
+# app.py — Crypto Technical Analysis Pro 2025 + Stochastic + Penjelasan Lengkap
 import streamlit as st
 import pandas as pd
 import requests
@@ -7,19 +7,20 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Crypto TA Pro 2025", page_icon="Chart", layout="wide")
 
-# ===================== FETCH DATA (PAKAI MARKET_CHART — ANTI-ERROR) =====================
-@st.cache_data(ttl=600, show_spinner="Mengambil data dari CoinGecko...")
+# ===================== FETCH DATA (CoinGecko Market Chart — 100% Stabil) =====================
+@st.cache_data(ttl=600, show_spinner="Mengambil data harga dari CoinGecko...")
 def get_price_data(coin_id: str, days: str):
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     params = {"vs_currency": "usd", "days": days, "interval": "daily"}
     try:
-        r = requests.get(url, params=params, timeout=15)
-        if r.status_code != 200:
+        response = requests.get(url, params=params, timeout=15)
+        if response.status_code != 200:
             return None
-        prices = r.json()["prices"]
-        if len(prices) == 0:
+        data = response.json().get("prices", [])
+        if len(data) == 0:
             return None
-        df = pd.DataFrame(prices, columns=["timestamp", "close"])
+
+        df = pd.DataFrame(data, columns=["timestamp", "close"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df["open"] = df["close"].shift(1)
         df["high"] = df[["open", "close"]].max(axis=1)
@@ -29,7 +30,7 @@ def get_price_data(coin_id: str, days: str):
     except:
         return None
 
-# ===================== SEMUA INDIKATOR =====================
+# ===================== SEMUA INDIKATOR + STOCHASTIC =====================
 def add_all_indicators(df: pd.DataFrame):
     df = df.copy()
     
@@ -66,94 +67,109 @@ def add_all_indicators(df: pd.DataFrame):
 
     return df
 
-# ===================== ANALISIS + PENJELASAN OTOMATIS =====================
-# GANTI HANYA BAGIAN generate_full_analysis() dan bagian UI-nya saja
-# Sisanya tetap sama seperti kode sebelumnya
+# ===================== ANALISIS + PENJELASAN OTOMATIS (FIXED!) =====================
+def generate_analysis(df, coin_name):
+    if len(df) < 50:
+        return {"signal": "DATA KURANG", "explanations": ["Perlu minimal 50 hari data untuk analisis akurat"]}
 
-def generate_full_analysis(df, coin_name):
     latest = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else latest
     price = latest["close"]
 
     score = 0
-    explanations = []   # ← NAMA INI YANG DIPAKAI DI BAWAH
+    explanations = []
 
-    # === SMA & Trend ===
-    if latest["close"] > latest["sma_20"] > latest["sma_50"]:
-        score += 2
-        explanations.append("Harga di atas SMA 20 & 50 → Tren naik sedang kuat")
-    if latest["close"] > latest["sma_200"]:
+    # SMA & Trend
+    if price > latest["sma_20"]:
         score += 1
-        explanations.append("Harga di atas SMA 200 → Tren jangka panjang BULLISH")
+        explanations.append("Harga di atas SMA 20 → Tren naik jangka pendek")
+    if price > latest["sma_50"]:
+        score += 1
+        explanations.append("Harga di atas SMA 50 → Tren naik jangka menengah")
+    if price > latest["sma_200"]:
+        score += 2
+        explanations.append("Harga di atas SMA 200 → Tren BULLISH jangka panjang")
 
     # Golden / Death Cross
     golden_cross = latest["sma_50"] > latest["sma_200"] and prev["sma_50"] <= prev["sma_200"]
-    death_cross  = latest["sma_50"] < latest["sma_200"] and prev["sma_50"] >= prev["sma_200"]
+    death_cross = latest["sma_50"] < latest["sma_200"] and prev["sma_50"] >= prev["sma_200"]
     if golden_cross:
-        score += 4
-        explanations.append("GOLDEN CROSS (50/200) → Sinyal BULLISH sangat kuat")
+        score += 5
+        explanations.append("GOLDEN CROSS TERJADI → Sinyal BULLISH sangat kuat!")
     if death_cross:
-        score -= 4
-        explanations.append("DEATH CROSS (50/200) → Sinyal BEARISH sangat kuat")
+        score -= 5
+        explanations.append("DEATH CROSS TERJADI → Sinyal BEARISH sangat kuat!")
 
-    # === RSI ===
+    # RSI
     rsi_val = latest["rsi"]
     if rsi_val < 30:
-        score += 3
-        explanations.append(f"RSI Oversold ({rsi_val:.1f}) → Kemungkinan besar akan rebound")
+        score += 4
+        explanations.append(f"RSI Oversold ({rsi_val:.1f}) → Kemungkinan besar rebound!")
     elif rsi_val > 70:
         score -= 3
         explanations.append(f"RSI Overbought ({rsi_val:.1f}) → Rawan koreksi turun")
 
-    # === MACD ===
+    # MACD
     macd_bull = latest["macd"] > latest["macd_signal"] and prev["macd"] <= prev["macd_signal"]
     macd_bear = latest["macd"] < latest["macd_signal"] and prev["macd"] >= prev["macd_signal"]
     if macd_bull:
-        score += 2
-        explanations.append("MACD Bullish Crossover → Momentum naik")
+        score += 3
+        explanations.append("MACD Bullish Crossover → Momentum naik kuat")
     if macd_bear:
-        score -= 2
+        score -= 3
         explanations.append("MACD Bearish Crossover → Momentum turun")
 
-    # === Bollinger Bands ===
-    if price < latest["bb_lower"] * 1.01:
-        score += 2
-        explanations.append("Harga menyentuh Lower Bollinger Band → Potensi bounce")
-    if price > latest["bb_upper"] * 0.99:
-        score -= 2
-        explanations.append("Harga menyentuh Upper Bollinger Band → Potensi pullback")
+    # Bollinger Bands
+    if price <= latest["bb_lower"] * 1.01:
+        score += 3
+        explanations.append("Harga menyentuh Lower Bollinger → Potensi bounce kuat")
+    if price >= latest["bb_upper"] * 0.99:
+        score -= 3
+        explanations.append("Harga menyentuh Upper Bollinger → Potensi pullback")
 
-    # === Stochastic Oscillator ===
+    # Stochastic Oscillator
     k = latest["%K"]
     d = latest["%D"]
     if k < 20 and d < 20 and k > d:
-        score += 3
-        explanations.append(f"Stochastic Oversold + Bullish Cross (%K={k:.1f}) → Sinyal beli kuat")
+        score += 4
+        explanations.append(f"Stochastic Oversold + Bullish Cross (%K={k:.1f}) → Sinyal beli sangat kuat!")
     if k > 80 and d > 80 and k < d:
-        score -= 3
-        explanations.append(f"Stochastic Overbought + Bearish Cross (%K={k:.1f}) → Sinyal jual")
+        score -= 4
+        explanations.append(f"Stochastic Overbought + Bearish Cross (%K={k:.1f}) → Sinyal jual!")
 
     # Final Signal
-    if score >= 9:   signal = "STRONG BUY";      color = "success"
-    elif score >= 6: signal = "BUY";             color = "success"
-    elif score >= 2: signal = "WEAK BUY / HOLD"; color = "warning"
-    elif score >= -3:signal = "HOLD";            color = "warning"
-    elif score >= -7:signal = "SELL";            color = "inverse"
-    else:            signal = "STRONG SELL";     color = "inverse"
+    if score >= 10:
+        signal = "STRONG BUY"
+        color = "success"
+    elif score >= 6:
+        signal = "BUY"
+        color = "success"
+    elif score >= 2:
+        signal = "WEAK BUY / HOLD"
+        color = "warning"
+    elif score >= -3:
+        signal = "HOLD"
+        color = "warning"
+    elif score >= -8:
+        signal = "SELL"
+        color = "inverse"
+    else:
+        signal = "STRONG SELL"
+        color = "inverse"
 
-    # TP & SL
+    # Take Profit & Stop Loss
     resistance = df["high"].tail(90).max()
     support = df["low"].tail(90).min()
     tp1 = round(price * 1.06, 2)
-    tp2 = round(price * 1.12, 2)
-    tp3 = round(price * 1.25, 2)
-    sl  = round(price * 0.92, 2)
+    tp2 = round(price * 1.15, 2)
+    tp3 = round(price * 1.30, 2)
+    sl = round(price * 0.90, 2)
 
     return {
         "signal": signal,
         "color": color,
         "score": score,
-        "explanations": explanations,   # ← SAMA DENGAN YANG DIATAS
+        "explanations": explanations,   # PASTI MUNCUL SEKARANG!
         "price": price,
         "rsi": rsi_val,
         "k": k,
@@ -161,82 +177,91 @@ def generate_full_analysis(df, coin_name):
         "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
         "support": support, "resistance": resistance
     }
+
 # ===================== UI =====================
-st.title("Crypto TA Pro 2025 + Stochastic")
-        # GANTI BAGIAN INI SAJA (setelah metric)
-        st.markdown("### Penjelasan Otomatis dari Semua Indikator")
-        if result["explanations"]:
-            for exp in result["explanations"]:
-                st.success(f"Check {exp}")
-        else:
-            st.info("Tidak ada sinyal kuat saat ini → Market sideways.")
+st.title("Crypto TA Pro 2025 + Stochastic Oscillator")
+st.markdown("**Signal Otomatis + Penjelasan Lengkap untuk Setiap Indikator**")
+
 with st.sidebar:
     st.header("Pilih Koin & Periode")
     coins = {
-        "Bitcoin": "bitcoin", "Ethereum": "ethereum", "BNB": "binancecoin",
-        "Solana": "solana", "XRP": "ripple", "Cardano": "cardano",
-        "Dogecoin": "dogecoin", "Shiba Inu": "shiba-inu", "Pepe": "pepe",
-        "Avalanche": "avalanche-2", "Toncoin": "toncoin"
+        "Bitcoin": "bitcoin",
+        "Ethereum": "ethereum",
+        "BNB": "binancecoin",
+        "Solana": "solana",
+        "XRP": "ripple",
+        "Cardano": "cardano",
+        "Dogecoin": "dogecoin",
+        "Shiba Inu": "shiba-inu",
+        "Pepe": "pepe",
+        "Avalanche": "avalanche-2",
+        "Toncoin": "toncoin",
+        "TRON": "tron"
     }
-    coin_name = st.selectbox("Koin", options=list(coins.keys()))
+    coin_name = st.selectbox("Cryptocurrency", options=list(coins.keys()), index=0)
     coin_id = coins[coin_name]
-    period = st.selectbox("Periode", ["90", "180", "365", "max"], index=1)
+    period = st.selectbox("Periode Analisis", ["90", "180", "365", "max"], index=1)
 
 if st.button("Analisis Sekarang", type="primary", use_container_width=True):
-    with st.spinner("Mengambil data & menghitung indikator..."):
+    with st.spinner(f"Menganalisis {coin_name}..."):
         df_raw = get_price_data(coin_id, period)
         if df_raw is None or df_raw.empty:
-            st.error("Gagal mengambil data. Coba koin lain.")
+            st.error(f"Gagal mengambil data untuk {coin_name}. Coba koin lain.")
             st.stop()
 
         df = add_all_indicators(df_raw)
         df_valid = df.dropna()
         if df_valid.empty:
-            df_valid = df.tail(150)
+            df_valid = df.tail(200)
 
-        result = generate_full_analysis(df_valid, coin_name)
+        result = generate_analysis(df_valid, coin_name)
         price = result["price"]
 
-        # Dashboard Utama
-        c1, c2, c3, c4, c5 = st.columns(5)
-        with c1: st.metric("Harga", f"${price:,.2f}")
-        with c2: st.metric("RSI", f"{result['rsi']:.1f}")
-        with c3: st.metric("Stoch %K", f"{result['k']:.1f}")
-        with c4: st.metric("Trend", "Bull" if price > df_valid["sma_20"].iloc[-1] else "Bear")
-        with c5:
+        # Dashboard
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1: st.metric("Harga Saat Ini", f"${price:,.2f}")
+        with col2: st.metric("RSI (14)", f"{result['rsi']:.1f}")
+        with col3: st.metric("Stoch %K", f"{result['k']:.1f}")
+        with col4: st.metric("Skor Signal", f"{result['score']}/18")
+        with col5:
             st.markdown(f"### **{result['signal']}**")
-            st.caption(f"Score: {result['score']}/15")
+            st.caption("Berdasarkan 6 indikator teknikal")
 
-        # Penjelasan Indikator
-        st.success("Penjelasan Otomatis dari Indikator")
-        for exp in result["explanations"]:
-            st.write("Check: " + exp)
+        # PENJELASAN OTOMATIS — SEKARANG PASTI MUNCUL!
+        st.success("Penjelasan Otomatis dari Semua Indikator")
+        if result["explanations"]:
+            for exp in result["explanations"]:
+                st.write(f"Check {exp}")
+        else:
+            st.info("Tidak ada sinyal kuat saat ini → Market sideways atau ranging.")
 
-        # Chart Lengkap (5 panel)
-        fig = make_subplots(rows=5, cols=1, shared_xaxes=True,
-                            subplot_titles=("Candlestick + SMA + Bollinger", "RSI", "MACD", "Stochastic Oscillator", "Volume Proxy"),
-                            row_heights=[0.45, 0.15, 0.15, 0.15, 0.1])
+        # Chart Lengkap
+        fig = make_subplots(
+            rows=5, cols=1, shared_xaxes=True,
+            subplot_titles=("Price + SMA + Bollinger Bands", "RSI", "MACD", "Stochastic Oscillator", "Volume Proxy"),
+            row_heights=[0.45, 0.15, 0.15, 0.15, 0.1]
+        )
 
-        # 1. Price + SMA + BB
+        # Candlestick + SMA + BB
         fig.add_trace(go.Candlestick(x=df_valid['timestamp'], open=df_valid['open'], high=df_valid['high'],
                                      low=df_valid['low'], close=df_valid['close'], name="Price"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['sma_20'], name="SMA 20", line=dict(color="orange")), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['sma_50'], name="SMA 50", line=dict(color="blue")), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['bb_upper'], name="BB Upper", line=dict(dash="dot", color="gray")), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['bb_lower'], name="BB Lower", line=dict(dash="dot", color="gray")), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['sma_20'], name="SMA 20", line=dict(color="#00ff00")), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['sma_50'], name="SMA 50", line=dict(color="#ffaa00")), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['bb_upper'], name="BB Upper", line=dict(dash="dot")), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['bb_lower'], name="BB Lower", line=dict(dash="dot")), row=1, col=1)
 
-        # 2. RSI
+        # RSI
         fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['rsi'], name="RSI", line=dict(color="purple")), row=2, col=1)
         fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
         fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
 
-        # 3. MACD
+        # MACD
         colors = ['green' if v >= 0 else 'red' for v in df_valid['macd_hist']]
-        fig.add_trace(go.Bar(x=df_valid['timestamp'], y=df_valid['macd_hist'], name="MACD Hist", marker_color=colors), row=3, col=1)
+        fig.add_trace(go.Bar(x=df_valid['timestamp'], y=df_valid['macd_hist'], name="Histogram", marker_color=colors), row=3, col=1)
         fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['macd'], name="MACD", line=dict(color="blue")), row=3, col=1)
-        fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['macd_signal'], name="Signal", line=dict(color="red")), row=3, col=1)
+        fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['macd_signal'], name="Signal", line=dict(color="orange")), row=3, col=1)
 
-        # 4. Stochastic
+        # Stochastic
         fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['%K'], name="%K", line=dict(color="cyan")), row=4, col=1)
         fig.add_trace(go.Scatter(x=df_valid['timestamp'], y=df_valid['%D'], name="%D", line=dict(color="magenta")), row=4, col=1)
         fig.add_hline(y=80, line_dash="dash", line_color="red", row=4, col=1)
@@ -249,13 +274,15 @@ if st.button("Analisis Sekarang", type="primary", use_container_width=True):
         st.markdown("## Trade Plan Otomatis")
         if "BUY" in result["signal"]:
             st.success(f"**REKOMENDASI: {result['signal']} {coin_name}**")
-            st.write(f"TP1 → `${result['tp1']}` (+6%)  \nTP2 → `${result['tp2']}` (+12%)  \nTP3 → `${result['tp3']}` (+25%)")
-            st.write(f"**Stop Loss:** `${result['sl']}` (-8%)")
+            st.write(f"**Take Profit:**\n• TP1 → `${result['tp1']}` (+6%)\n• TP2 → `${result['tp2']}` (+15%)\n• TP3 → `${result['tp3']}` (+30%)")
+            st.write(f"**Stop Loss:** `${result['sl']}` (-10%)")
             st.write(f"Support: `${result['support']:.2f}` | Resistance: `${result['resistance']:.2f}`")
+        elif "SELL" in result["signal"]:
+            st.error(f"**REKOMENDASI: {result['signal']} / Ambil Profit**")
         else:
-            st.warning(f"**{result['signal']}** — Tunggu atau ambil profit.")
+            st.warning("**HOLD** — Tunggu sinyal lebih jelas.")
 
-        st.caption("Bukan saran investasi • DYOR • Dibuat dengan Streamlit + CoinGecko")
+        st.caption("Bukan saran finansial • DYOR- Streamlit + CoinGecko")
 
 st.markdown("---")
-st.caption("Crypto TA Gratis 100%")
+st.caption("Crypto TA Pro 2025")
