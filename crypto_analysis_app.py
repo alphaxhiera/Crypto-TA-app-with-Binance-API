@@ -67,43 +67,47 @@ def add_all_indicators(df: pd.DataFrame):
     return df
 
 # ===================== ANALISIS + PENJELASAN OTOMATIS =====================
+# GANTI HANYA BAGIAN generate_full_analysis() dan bagian UI-nya saja
+# Sisanya tetap sama seperti kode sebelumnya
+
 def generate_full_analysis(df, coin_name):
     latest = df.iloc[-1]
-    prev = df.iloc[-2]
+    prev = df.iloc[-2] if len(df) > 1 else latest
     price = latest["close"]
 
-    # === DETEKSI SIGNAL ===
+    score = 0
+    explanations = []   # ← NAMA INI YANG DIPAKAI DI BAWAH
+
+    # === SMA & Trend ===
+    if latest["close"] > latest["sma_20"] > latest["sma_50"]:
+        score += 2
+        explanations.append("Harga di atas SMA 20 & 50 → Tren naik sedang kuat")
+    if latest["close"] > latest["sma_200"]:
+        score += 1
+        explanations.append("Harga di atas SMA 200 → Tren jangka panjang BULLISH")
+
+    # Golden / Death Cross
     golden_cross = latest["sma_50"] > latest["sma_200"] and prev["sma_50"] <= prev["sma_200"]
     death_cross  = latest["sma_50"] < latest["sma_200"] and prev["sma_50"] >= prev["sma_200"]
-    macd_bull = latest["macd"] > latest["macd_signal"] and prev["macd"] <= prev["macd_signal"]
-    macd_bear = latest["macd"] < latest["macd_signal"] and prev["macd"] >= prev["macd_signal"]
-    rsi_val = latest["rsi"]
-    k = latest["%K"]
-    d = latest["%D"]
-
-    score = 0
-    explanations = []
-
-    # SMA
-    if price > latest["sma_20"] > latest["sma_50"]:
-        score += 2
-        explanations.append("Harga di atas SMA 20 & 50 → Tren naik kuat")
     if golden_cross:
         score += 4
-        explanations.append("Golden Cross (50/200) → Sinyal BULLISH kuat jangka panjang")
+        explanations.append("GOLDEN CROSS (50/200) → Sinyal BULLISH sangat kuat")
     if death_cross:
         score -= 4
-        explanations.append("Death Cross (50/200) → Sinyal BEARISH kuat")
+        explanations.append("DEATH CROSS (50/200) → Sinyal BEARISH sangat kuat")
 
-    # RSI
+    # === RSI ===
+    rsi_val = latest["rsi"]
     if rsi_val < 30:
         score += 3
-        explanations.append(f"RSI Oversold ({rsi_val:.1f}) → Kemungkinan rebound")
+        explanations.append(f"RSI Oversold ({rsi_val:.1f}) → Kemungkinan besar akan rebound")
     elif rsi_val > 70:
-        score -= 2
-        explanations.append(f"RSI Overbought ({rsi_val:.1f}) → Risiko koreksi")
+        score -= 3
+        explanations.append(f"RSI Overbought ({rsi_val:.1f}) → Rawan koreksi turun")
 
-    # MACD
+    # === MACD ===
+    macd_bull = latest["macd"] > latest["macd_signal"] and prev["macd"] <= prev["macd_signal"]
+    macd_bear = latest["macd"] < latest["macd_signal"] and prev["macd"] >= prev["macd_signal"]
     if macd_bull:
         score += 2
         explanations.append("MACD Bullish Crossover → Momentum naik")
@@ -111,31 +115,33 @@ def generate_full_analysis(df, coin_name):
         score -= 2
         explanations.append("MACD Bearish Crossover → Momentum turun")
 
-    # Bollinger Bands
-    if price < latest["bb_lower"]:
+    # === Bollinger Bands ===
+    if price < latest["bb_lower"] * 1.01:
         score += 2
-        explanations.append("Harga sentuh Lower Bollinger → Potensi bounce")
-    if price > latest["bb_upper"]:
+        explanations.append("Harga menyentuh Lower Bollinger Band → Potensi bounce")
+    if price > latest["bb_upper"] * 0.99:
         score -= 2
-        explanations.append("Harga sentuh Upper Bollinger → Potensi pullback")
+        explanations.append("Harga menyentuh Upper Bollinger Band → Potensi pullback")
 
-    # Stochastic
+    # === Stochastic Oscillator ===
+    k = latest["%K"]
+    d = latest["%D"]
     if k < 20 and d < 20 and k > d:
         score += 3
-        explanations.append(f"Stochastic Oversold (%K={k:.1f}, %D={d:.1f}) + Bullish Cross → Reversal naik")
+        explanations.append(f"Stochastic Oversold + Bullish Cross (%K={k:.1f}) → Sinyal beli kuat")
     if k > 80 and d > 80 and k < d:
-        score -= 2
-        explanations.append(f"Stochastic Overbought (%K={k:.1f}, %D={d:.1f}) + Bearish Cross → Reversal turun")
+        score -= 3
+        explanations.append(f"Stochastic Overbought + Bearish Cross (%K={k:.1f}) → Sinyal jual")
 
     # Final Signal
-    if score >= 8:   signal, color = "STRONG BUY", "success"
-    elif score >= 5: signal, color = "BUY", "success"
-    elif score >= 1: signal, color = "WEAK BUY / HOLD", "warning"
-    elif score >= -3: signal, color = "HOLD", "warning"
-    elif score >= -6: signal, color = "SELL", "inverse"
-    else:            signal, color = "STRONG SELL", "inverse"
+    if score >= 9:   signal = "STRONG BUY";      color = "success"
+    elif score >= 6: signal = "BUY";             color = "success"
+    elif score >= 2: signal = "WEAK BUY / HOLD"; color = "warning"
+    elif score >= -3:signal = "HOLD";            color = "warning"
+    elif score >= -7:signal = "SELL";            color = "inverse"
+    else:            signal = "STRONG SELL";     color = "inverse"
 
-    # Take Profit & Stop Loss
+    # TP & SL
     resistance = df["high"].tail(90).max()
     support = df["low"].tail(90).min()
     tp1 = round(price * 1.06, 2)
@@ -144,18 +150,26 @@ def generate_full_analysis(df, coin_name):
     sl  = round(price * 0.92, 2)
 
     return {
-        "signal": signal, "color": color, "score": score,
-        "explanations": explanations, "price": price,
-        "rsi": rsi_val, "k": k, "d": d,
+        "signal": signal,
+        "color": color,
+        "score": score,
+        "explanations": explanations,   # ← SAMA DENGAN YANG DIATAS
+        "price": price,
+        "rsi": rsi_val,
+        "k": k,
+        "d": d,
         "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
-        "support": support, "resistance": resistance,
-        "golden_cross": golden_cross, "death_cross": death_cross
+        "support": support, "resistance": resistance
     }
-
 # ===================== UI =====================
 st.title("Crypto TA Pro 2025 + Stochastic")
-st.markdown("**Signal Otomatis + Penjelasan Lengkap Setiap Indikator**")
-
+        # GANTI BAGIAN INI SAJA (setelah metric)
+        st.markdown("### Penjelasan Otomatis dari Semua Indikator")
+        if result["explanations"]:
+            for exp in result["explanations"]:
+                st.success(f"Check {exp}")
+        else:
+            st.info("Tidak ada sinyal kuat saat ini → Market sideways.")
 with st.sidebar:
     st.header("Pilih Koin & Periode")
     coins = {
