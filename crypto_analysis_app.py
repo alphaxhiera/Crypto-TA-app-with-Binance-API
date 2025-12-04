@@ -5,10 +5,11 @@ from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# Function to fetch data from Binance API
-def get_response(endpoint):
-    url = "https://api.binance.com" + endpoint
-    response = requests.get(url)
+# Function to fetch data from CoinGecko API
+def get_response(endpoint, api_key):
+    headers = {"x-cg-demo-api-key": api_key}
+    url = "https://api.coingecko.com/api/v3" + endpoint
+    response = requests.get(url, headers=headers)
     if response.status_code == 200:
         return response.json()
     else:
@@ -40,34 +41,19 @@ def add_macd(df, fast=12, slow=26, signal=9):
     return df
 
 # Streamlit App Layout
-st.title('Cryptocurrency Technical Analysis App (Binance API)')
+st.title('Cryptocurrency Technical Analysis App')
 
-# Dropdown for popular symbols
-symbols = ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT', 'DOTUSDT']
-symbol = st.selectbox('Trading Pair', symbols)
+api_key = st.text_input('Enter your CoinGecko Demo API Key', type='password')
+coin_id = st.text_input('Coin ID (e.g., bitcoin)', 'bitcoin')
+days = st.selectbox('Data Range (Days)', [30, 60, 90, 180, 365, 'max'], index=2)
 
-# Interval selection
-intervals = ['1m', '5m', '15m', '1h', '4h', '1d', '1w']
-interval = st.selectbox('Interval', intervals, index=5)  # Default to 1d
-
-# Limit selection (number of candles)
-limit_options = [100, 250, 500, 1000]
-limit = st.selectbox('Number of Candles (Limit)', limit_options, index=2)
-
-if st.button('Analyze'):
-    endpoint = f"/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    data = get_response(endpoint)
+if api_key and st.button('Analyze'):
+    endpoint = f"/coins/{coin_id}/ohlc?vs_currency=usd&days={days}"
+    data = get_response(endpoint, api_key)
     if data:
-        # Parse Binance response: list of [open_time, open, high, low, close, volume, ...]
-        df = pd.DataFrame(data, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_volume', 'trades', 'taker_buy_base', 'taker_buy_quote', 'ignore'
-        ])
-        # Convert to numeric and datetime
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = pd.to_numeric(df[col])
+        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df = df.sort_values('timestamp').reset_index(drop=True)
+        df = df.sort_values('timestamp')
 
         # Compute indicators
         df = add_sma(df)
@@ -77,7 +63,7 @@ if st.button('Analyze'):
         # Create interactive chart
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
                             vertical_spacing=0.1,
-                            subplot_titles=(f'{symbol} Candlestick with SMAs', 'RSI', 'MACD'),
+                            subplot_titles=('Candlestick with SMAs', 'RSI', 'MACD'),
                             row_heights=[0.5, 0.25, 0.25])
 
         # Candlestick trace
@@ -113,8 +99,7 @@ if st.button('Analyze'):
                       row=3, col=1)
 
         # Layout updates
-        period_text = f'{limit} {interval} candles'
-        fig.update_layout(title=f'{symbol} Technical Analysis ({period_text})',
+        fig.update_layout(title=f'{coin_id.upper()} Technical Analysis (Last {days} Days)',
                           xaxis_title='Date',
                           height=800,
                           showlegend=True,
@@ -123,10 +108,5 @@ if st.button('Analyze'):
         st.plotly_chart(fig, use_container_width=True)
 
         # Display raw data table (optional)
-        st.subheader('Raw OHLC Data (Last 10 Rows)')
-        st.dataframe(df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].tail(10))
-
-        # Info on data range
-        start_date = df['timestamp'].min().strftime('%Y-%m-%d %H:%M')
-        end_date = df['timestamp'].max().strftime('%Y-%m-%d %H:%M')
-        st.info(f'Data from {start_date} to {end_date} (UTC)')
+        st.subheader('Raw OHLC Data')
+        st.dataframe(df.tail(10))  # Show last 10 rows for brevity
