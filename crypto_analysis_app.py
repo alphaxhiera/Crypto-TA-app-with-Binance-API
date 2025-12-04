@@ -244,4 +244,4 @@ if st.button("Analyze Sekarang", type="primary", use_container_width=True):
         st.caption("Bukan saran finansial • Gunakan money management • Dibuat dengan Streamlit + CoinGecko")
 
 st.markdown("---")
-st.caption("Crypto TA Pro v2025 • Dibuat oleh Grok • 100% Gratis & Open Source")
+st.caption("Crypto TA Pro v2025 ")
